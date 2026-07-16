@@ -3,7 +3,10 @@ Funciones auxiliares para el dashboard de SLA.
 """
 import pandas as pd
 from datetime import datetime, time
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional, Union
+
+TZ_COLOMBIA = ZoneInfo("America/Bogota")
 
 DEFAULT_SLA_CONFIG = {
     "general": 10,
@@ -38,12 +41,17 @@ def parsear_fecha(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def ahora_local() -> datetime:
+    """Retorna la fecha/hora actual en Colombia (sin tzinfo para comparaciones)."""
+    return datetime.now(TZ_COLOMBIA).replace(tzinfo=None)
+
+
 def calcular_sla(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calcula el SLA como la diferencia en días entre la fecha actual
     y la Fecha/Hora de apertura. Días corridos (calendario).
     """
-    ahora = datetime.now()
+    ahora = ahora_local()
     df["SLA"] = (ahora - df["Fecha/Hora de apertura"]).dt.total_seconds() / (24 * 3600)
     df["SLA"] = df["SLA"].round(2)
     return df
@@ -149,7 +157,7 @@ def combinar_hora_hoy(hora: Any) -> Optional[datetime]:
     if isinstance(hora, str) and not hora.strip():
         return None
 
-    hoy = datetime.now().date()
+    hoy = ahora_local().date()
 
     if isinstance(hora, datetime):
         return datetime.combine(hoy, hora.time())
@@ -251,7 +259,7 @@ def obtener_alertas_revision(
     """
     Retorna casos pendientes de revisión cuya hora programada ya venció.
     """
-    ahora = datetime.now()
+    ahora = ahora_local()
     alertas = []
 
     for caso_id, rev in revisiones.items():
@@ -278,3 +286,14 @@ def obtener_alertas_revision(
 
     alertas.sort(key=lambda x: x["Revisar a las"])
     return alertas
+
+
+def necesita_monitoreo(revisiones: Dict[str, Dict[str, Any]]) -> bool:
+    """Indica si hay casos con hora de revisión programada y no revisados."""
+    for rev in revisiones.values():
+        if rev.get("revisado"):
+            continue
+        proxima = rev.get("proxima_revision")
+        if proxima is not None and not pd.isna(proxima):
+            return True
+    return False

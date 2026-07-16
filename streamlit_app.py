@@ -2,10 +2,13 @@
 Dashboard de Análisis de SLA - Reporte Diario
 """
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
+from datetime import timedelta
 from io import BytesIO
 from utils import (
     DEFAULT_SLA_CONFIG,
+    ahora_local,
     cargar_excel,
     parsear_fecha,
     calcular_sla,
@@ -15,6 +18,7 @@ from utils import (
     sincronizar_revisiones,
     aplicar_estado_editor,
     obtener_alertas_revision,
+    necesita_monitoreo,
 )
 
 # Configuración de la página
@@ -116,6 +120,105 @@ if "sla_config" not in st.session_state:
 if "revisiones" not in st.session_state:
     st.session_state.revisiones = {}
 
+if "alertas_vistas" not in st.session_state:
+    st.session_state.alertas_vistas = set()
+
+
+def sincronizar_todos_editores(
+    categorias: dict,
+    revisiones: dict,
+) -> None:
+    """Lee el estado de cada data editor y actualiza revisiones."""
+    for nombre, resultado in categorias.items():
+        if len(resultado) == 0:
+            continue
+        display = preparar_tabla_con_revision(resultado, revisiones)
+        editor_key = f"editor_{nombre}"
+        if editor_key in st.session_state:
+            aplicar_estado_editor(
+                display,
+                st.session_state[editor_key],
+                revisiones,
+            )
+
+
+def render_banner_alertas(alertas: list) -> None:
+    items_html = ""
+    for alerta in alertas:
+        sla_val = alerta["SLA"]
+        sla_str = f"{sla_val:.1f}" if isinstance(sla_val, (int, float)) else str(sla_val)
+        items_html += (
+            f'<div class="alert-item">'
+            f'<strong>{alerta["Número del caso"]}</strong> · '
+            f'{alerta["Agente"]} · {alerta["Asunto"]} · '
+            f'SLA {sla_str} días · Revisar desde las {alerta["Hora"]}'
+            f'</div>'
+        )
+    st.markdown(
+        f"""
+        <div class="alert-banner">
+            <div class="alert-title">⚠ Casos pendientes de revisión ({len(alertas)})</div>
+            {items_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def notificar_alertas_nuevas(alertas: list) -> None:
+    """Muestra toast y notificación del navegador para alertas nuevas."""
+    ids_actuales = {a["Número del caso"] for a in alertas}
+    nuevas = [a for a in alertas if a["Número del caso"] not in st.session_state.alertas_vistas]
+
+    for alerta in nuevas:
+        st.toast(
+            f"Revisar caso {alerta['Número del caso']} — {alerta['Agente']}",
+            icon="⚠️",
+        )
+
+    if nuevas:
+        casos_texto = ", ".join(a["Número del caso"] for a in nuevas)
+        components.html(
+            f"""
+            <script>
+            if ("Notification" in window) {{
+                if (Notification.permission === "default") {{
+                    Notification.requestPermission();
+                }}
+                if (Notification.permission === "granted") {{
+                    new Notification("Casos a revisar", {{
+                        body: "{casos_texto}",
+                        icon: "https://static.streamlit.io/favicon.ico"
+                    }});
+                }}
+            }}
+            </script>
+            """,
+            height=0,
+        )
+
+    st.session_state.alertas_vistas = ids_actuales
+
+
+@st.fragment(run_every=timedelta(seconds=30))
+def monitoreo_alertas() -> None:
+    """Verifica alertas automáticamente cada 30 segundos."""
+    categorias = st.session_state.get("categorias_cache")
+    casos_info = st.session_state.get("casos_info_cache")
+    if not categorias or not casos_info:
+        return
+
+    revisiones = st.session_state.revisiones
+    sincronizar_todos_editores(categorias, revisiones)
+    alertas = obtener_alertas_revision(revisiones, casos_info)
+
+    if alertas:
+        render_banner_alertas(alertas)
+        notificar_alertas_nuevas(alertas)
+    elif necesita_monitoreo(revisiones):
+        hora_actual = ahora_local().strftime("%I:%M %p")
+        st.caption(f"Monitoreo activo — hora actual: {hora_actual} (Colombia). Verificando cada 30 s.")
+
 
 def render_metric_card(label: str, value: str) -> None:
     st.markdown(
@@ -196,9 +299,12 @@ with st.sidebar:
         "firma": sla_firma,
     }
 
-    if st.button("Restaurar valores por defecto", use_container_width=True):
+    if st.button("Restaurar valores por defecto", width="stretch"):
         st.session_state.sla_config = DEFAULT_SLA_CONFIG.copy()
         st.rerun()
+
+    st.divider()
+    st.markdown(f"Hora actual (Colombia): **{ahora_local().strftime('%I:%M %p')}**")
 
 # --- Contenido principal ---
 if archivo is not None:
@@ -210,42 +316,23 @@ if archivo is not None:
         casos_info = construir_info_casos(df)
         categorias = obtener_todas_categorias(df, st.session_state.sla_config)
 
-        # Sincronizar revisiones previas antes de calcular alertas
-        for nombre, resultado in categorias.items():
-            if len(resultado) == 0:
-                continue
-            display = preparar_tabla_con_revision(resultado, st.session_state.revisiones)
-            editor_key = f"editor_{nombre}"
-            if editor_key in st.session_state:
-                aplicar_estado_editor(
-                    display,
-                    st.session_state[editor_key],
-                    st.session_state.revisiones,
-                )
+        st.session_state.categorias_cache = categorias
+        st.session_state.casos_info_cache = casos_info
 
-        alertas = obtener_alertas_revision(st.session_state.revisiones, casos_info)
+        sincronizar_todos_editores(categorias, st.session_state.revisiones)
 
-        if alertas:
-            items_html = ""
-            for alerta in alertas:
-                sla_val = alerta["SLA"]
-                sla_str = f"{sla_val:.1f}" if isinstance(sla_val, (int, float)) else str(sla_val)
-                items_html += (
-                    f'<div class="alert-item">'
-                    f'<strong>{alerta["Número del caso"]}</strong> · '
-                    f'{alerta["Agente"]} · {alerta["Asunto"]} · '
-                    f'SLA {sla_str} días · Revisar desde las {alerta["Hora"]}'
-                    f'</div>'
-                )
-            st.markdown(
-                f"""
-                <div class="alert-banner">
-                    <div class="alert-title">⚠ Casos pendientes de revisión ({len(alertas)})</div>
-                    {items_html}
-                </div>
-                """,
-                unsafe_allow_html=True,
+        monitoreo_alertas()
+
+        if necesita_monitoreo(st.session_state.revisiones):
+            alertas_pendientes = obtener_alertas_revision(
+                st.session_state.revisiones, casos_info
             )
+            if not alertas_pendientes:
+                hora_actual = ahora_local().strftime("%I:%M %p")
+                st.info(
+                    f"Monitoreo activo. Hora actual: {hora_actual} (Colombia). "
+                    "La alerta aparecerá automáticamente cuando llegue la hora programada."
+                )
 
         # --- Métricas generales ---
         total_casos = len(df)
