@@ -2,8 +2,8 @@
 Funciones auxiliares para el dashboard de SLA.
 """
 import pandas as pd
-from datetime import datetime
-from typing import List, Dict, Any, Optional
+from datetime import datetime, time
+from typing import List, Dict, Any, Optional, Union
 
 DEFAULT_SLA_CONFIG = {
     "general": 10,
@@ -142,6 +142,41 @@ def construir_info_casos(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     return info
 
 
+def combinar_hora_hoy(hora: Any) -> Optional[datetime]:
+    """Combina una hora con la fecha de hoy para programar la revisión."""
+    if hora is None or pd.isna(hora):
+        return None
+    if isinstance(hora, str) and not hora.strip():
+        return None
+
+    hoy = datetime.now().date()
+
+    if isinstance(hora, datetime):
+        return datetime.combine(hoy, hora.time())
+    if isinstance(hora, time):
+        return datetime.combine(hoy, hora)
+
+    parsed = pd.to_datetime(hora, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return datetime.combine(hoy, parsed.time())
+
+
+def extraer_hora_revision(proxima: Any) -> Optional[time]:
+    """Extrae solo la hora de una revisión programada."""
+    if proxima is None or pd.isna(proxima):
+        return None
+    if isinstance(proxima, time):
+        return proxima
+    if isinstance(proxima, datetime):
+        return proxima.time()
+
+    parsed = pd.to_datetime(proxima, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.time()
+
+
 def preparar_tabla_con_revision(
     resultado: pd.DataFrame,
     revisiones: Dict[str, Dict[str, Any]],
@@ -152,7 +187,9 @@ def preparar_tabla_con_revision(
         lambda x: revisiones.get(str(x), {}).get("revisado", False)
     )
     display["Revisar a las"] = display["Número del caso"].apply(
-        lambda x: revisiones.get(str(x), {}).get("proxima_revision", pd.NaT)
+        lambda x: extraer_hora_revision(
+            revisiones.get(str(x), {}).get("proxima_revision")
+        )
     )
     return display
 
@@ -164,14 +201,47 @@ def sincronizar_revisiones(
     """Sincroniza los cambios del data editor al estado de revisiones."""
     for _, row in edited_df.iterrows():
         caso_id = str(row["Número del caso"])
-        proxima = row.get("Revisar a las")
-        if pd.isna(proxima):
-            proxima = None
+        hora = row.get("Revisar a las")
 
         revisiones[caso_id] = {
             "revisado": bool(row.get("Revisado", False)),
-            "proxima_revision": proxima,
+            "proxima_revision": combinar_hora_hoy(hora),
         }
+
+
+def aplicar_estado_editor(
+    display_df: pd.DataFrame,
+    editor_state: Union[pd.DataFrame, Dict[str, Any], None],
+    revisiones: Dict[str, Dict[str, Any]],
+) -> None:
+    """
+    Aplica el estado del data editor al diccionario de revisiones.
+    Compatible con DataFrame (retorno del widget) y dict (session_state).
+    """
+    if editor_state is None:
+        return
+
+    if isinstance(editor_state, pd.DataFrame):
+        sincronizar_revisiones(editor_state, revisiones)
+        return
+
+    if not isinstance(editor_state, dict):
+        return
+
+    edited_rows = editor_state.get("edited_rows", {})
+    if not edited_rows:
+        return
+
+    temp = display_df.reset_index(drop=True).copy()
+    for row_idx, changes in edited_rows.items():
+        idx = int(row_idx)
+        if idx >= len(temp):
+            continue
+        for col, val in changes.items():
+            if col in temp.columns:
+                temp.at[idx, col] = val
+
+    sincronizar_revisiones(temp, revisiones)
 
 
 def obtener_alertas_revision(
@@ -203,6 +273,7 @@ def obtener_alertas_revision(
                 "Asunto": info.get("Asunto", "—"),
                 "SLA": info.get("SLA", "—"),
                 "Revisar a las": proxima,
+                "Hora": proxima.strftime("%I:%M %p"),
             })
 
     alertas.sort(key=lambda x: x["Revisar a las"])

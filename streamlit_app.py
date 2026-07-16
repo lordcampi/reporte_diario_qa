@@ -13,6 +13,7 @@ from utils import (
     construir_info_casos,
     preparar_tabla_con_revision,
     sincronizar_revisiones,
+    aplicar_estado_editor,
     obtener_alertas_revision,
 )
 
@@ -134,9 +135,9 @@ def build_column_config(columns: list) -> dict:
         "Agente": st.column_config.TextColumn("Agente", disabled=True, width="medium"),
         "SLA": st.column_config.NumberColumn("SLA (días)", format="%.1f", disabled=True, width="small"),
         "Revisado": st.column_config.CheckboxColumn("Revisado", default=False, width="small"),
-        "Revisar a las": st.column_config.DatetimeColumn(
+        "Revisar a las": st.column_config.TimeColumn(
             "Revisar a las",
-            format="D MMM YYYY, h:mm a",
+            format="h:mm a",
             step=60,
             width="medium",
         ),
@@ -213,9 +214,11 @@ if archivo is not None:
         for nombre, resultado in categorias.items():
             if len(resultado) == 0:
                 continue
+            display = preparar_tabla_con_revision(resultado, st.session_state.revisiones)
             editor_key = f"editor_{nombre}"
             if editor_key in st.session_state:
-                sincronizar_revisiones(
+                aplicar_estado_editor(
+                    display,
                     st.session_state[editor_key],
                     st.session_state.revisiones,
                 )
@@ -225,14 +228,13 @@ if archivo is not None:
         if alertas:
             items_html = ""
             for alerta in alertas:
-                hora = alerta["Revisar a las"].strftime("%d/%m/%Y %I:%M %p")
                 sla_val = alerta["SLA"]
                 sla_str = f"{sla_val:.1f}" if isinstance(sla_val, (int, float)) else str(sla_val)
                 items_html += (
                     f'<div class="alert-item">'
                     f'<strong>{alerta["Número del caso"]}</strong> · '
                     f'{alerta["Agente"]} · {alerta["Asunto"]} · '
-                    f'SLA {sla_str} días · Revisar desde {hora}'
+                    f'SLA {sla_str} días · Revisar desde las {alerta["Hora"]}'
                     f'</div>'
                 )
             st.markdown(
@@ -270,7 +272,7 @@ if archivo is not None:
                         display.reset_index(drop=True),
                         column_config=build_column_config(display.columns.tolist()),
                         hide_index=True,
-                        use_container_width=True,
+                        width="stretch",
                         height=min(400, 50 + cantidad * 38),
                         key=f"editor_{nombre}",
                     )
