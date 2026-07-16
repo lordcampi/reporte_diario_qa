@@ -1,11 +1,13 @@
 """
 Dashboard de Análisis de SLA - Reporte Diario
 """
-import streamlit as st
-import streamlit.components.v1 as components
-import pandas as pd
+import json
 from datetime import timedelta
 from io import BytesIO
+
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
 from utils import (
     DEFAULT_SLA_CONFIG,
     ahora_local,
@@ -108,6 +110,26 @@ st.markdown(
         border-radius: 10px !important;
         background: #1E293B !important;
     }
+    .notif-btn {
+        width: 100%;
+        padding: 0.6rem 1rem;
+        background: #4F46E5;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        font-size: 0.9rem;
+    }
+    .notif-btn:hover { background: #4338CA; }
+    .notif-status {
+        display: block;
+        margin-top: 0.5rem;
+        font-size: 0.85rem;
+        color: #94A3B8;
+    }
+    .notif-ok { color: #4ADE80 !important; }
+    .notif-warn { color: #FBBF24 !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -165,6 +187,110 @@ def render_banner_alertas(alertas: list) -> None:
     )
 
 
+def render_activador_notificaciones() -> None:
+    """Botón HTML para solicitar permiso de notificaciones (requiere clic del usuario)."""
+    components.html(
+        """
+        <div>
+            <button class="notif-btn" id="btn-notif">
+                Activar notificaciones de escritorio
+            </button>
+            <span class="notif-status" id="notif-status"></span>
+        </div>
+        <script>
+        const status = document.getElementById("notif-status");
+
+        function actualizarEstado() {
+            if (!("Notification" in window)) {
+                status.textContent = "Tu navegador no soporta notificaciones.";
+                status.className = "notif-status notif-warn";
+                return;
+            }
+            if (Notification.permission === "granted") {
+                status.textContent = "✓ Notificaciones activadas";
+                status.className = "notif-status notif-ok";
+                document.getElementById("btn-notif").textContent = "Notificaciones activadas";
+            } else if (Notification.permission === "denied") {
+                status.textContent = "Bloqueadas. Habilítalas en la configuración del navegador.";
+                status.className = "notif-status notif-warn";
+            } else {
+                status.textContent = "Pendiente — haz clic para activar";
+                status.className = "notif-status";
+            }
+        }
+
+        document.getElementById("btn-notif").addEventListener("click", function () {
+            if (!("Notification" in window)) return;
+            Notification.requestPermission().then(function () {
+                actualizarEstado();
+            });
+        });
+
+        actualizarEstado();
+        </script>
+        """,
+        height=90,
+    )
+
+
+def enviar_notificaciones_escritorio(alertas: list) -> None:
+    """Envía una notificación de escritorio por cada caso nuevo."""
+    payload = json.dumps([
+        {
+            "id": str(a["Número del caso"]),
+            "agente": str(a["Agente"]),
+            "asunto": str(a["Asunto"]),
+            "sla": (
+                f"{a['SLA']:.1f}"
+                if isinstance(a["SLA"], (int, float))
+                else str(a["SLA"])
+            ),
+            "hora": str(a["Hora"]),
+        }
+        for a in alertas
+    ])
+
+    components.html(
+        f"""
+        <script>
+        (function () {{
+            const alertas = {payload};
+            if (!("Notification" in window) || Notification.permission !== "granted") {{
+                return;
+            }}
+
+            alertas.forEach(function (a) {{
+                const notif = new Notification("Revisar caso " + a.id, {{
+                    body: a.agente + " · " + a.asunto + " · SLA " + a.sla + " días · desde las " + a.hora,
+                    icon: "https://static.streamlit.io/favicon.ico",
+                    requireInteraction: true,
+                    tag: "sla-revision-" + a.id,
+                    silent: false,
+                }});
+                notif.onclick = function () {{
+                    window.focus();
+                    notif.close();
+                }};
+            }});
+
+            try {{
+                const ctx = new AudioContext();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.value = 880;
+                gain.gain.value = 0.15;
+                osc.start();
+                osc.stop(ctx.currentTime + 0.25);
+            }} catch (e) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def notificar_alertas_nuevas(alertas: list) -> None:
     """Muestra toast y notificación del navegador para alertas nuevas."""
     ids_actuales = {a["Número del caso"] for a in alertas}
@@ -177,32 +303,14 @@ def notificar_alertas_nuevas(alertas: list) -> None:
         )
 
     if nuevas:
-        casos_texto = ", ".join(a["Número del caso"] for a in nuevas)
-        components.html(
-            f"""
-            <script>
-            if ("Notification" in window) {{
-                if (Notification.permission === "default") {{
-                    Notification.requestPermission();
-                }}
-                if (Notification.permission === "granted") {{
-                    new Notification("Casos a revisar", {{
-                        body: "{casos_texto}",
-                        icon: "https://static.streamlit.io/favicon.ico"
-                    }});
-                }}
-            }}
-            </script>
-            """,
-            height=0,
-        )
+        enviar_notificaciones_escritorio(nuevas)
 
     st.session_state.alertas_vistas = ids_actuales
 
 
-@st.fragment(run_every=timedelta(seconds=30))
+@st.fragment(run_every=timedelta(seconds=15))
 def monitoreo_alertas() -> None:
-    """Verifica alertas automáticamente cada 30 segundos."""
+    """Verifica alertas automáticamente cada 15 segundos."""
     categorias = st.session_state.get("categorias_cache")
     casos_info = st.session_state.get("casos_info_cache")
     if not categorias or not casos_info:
@@ -217,7 +325,10 @@ def monitoreo_alertas() -> None:
         notificar_alertas_nuevas(alertas)
     elif necesita_monitoreo(revisiones):
         hora_actual = ahora_local().strftime("%I:%M %p")
-        st.caption(f"Monitoreo activo — hora actual: {hora_actual} (Colombia). Verificando cada 30 s.")
+        st.caption(
+            f"Monitoreo activo — hora actual: {hora_actual} (Colombia). "
+            "Verificando cada 15 s. Puedes minimizar la ventana."
+        )
 
 
 def render_metric_card(label: str, value: str) -> None:
@@ -304,6 +415,14 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
+    st.subheader("Notificaciones")
+    render_activador_notificaciones()
+    st.caption(
+        "Activa las notificaciones y deja esta pestaña abierta (puede estar minimizada). "
+        "Cuando llegue la hora programada, recibirás un aviso en el escritorio."
+    )
+
+    st.divider()
     st.markdown(f"Hora actual (Colombia): **{ahora_local().strftime('%I:%M %p')}**")
 
 # --- Contenido principal ---
@@ -331,7 +450,8 @@ if archivo is not None:
                 hora_actual = ahora_local().strftime("%I:%M %p")
                 st.info(
                     f"Monitoreo activo. Hora actual: {hora_actual} (Colombia). "
-                    "La alerta aparecerá automáticamente cuando llegue la hora programada."
+                    "Activa las notificaciones en el panel lateral y minimiza la ventana. "
+                    "La alerta llegará al escritorio cuando sea la hora programada."
                 )
 
         # --- Métricas generales ---
