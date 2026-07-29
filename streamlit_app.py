@@ -1,6 +1,8 @@
 """
 Dashboard de Análisis de SLA - Reporte Diario
 """
+import os
+import re
 from datetime import timedelta
 from io import BytesIO
 
@@ -184,6 +186,51 @@ def render_banner_alertas(alertas: list) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def cargar_credenciales_telegram() -> tuple:
+    """
+    Carga credenciales de Telegram desde múltiples fuentes en orden:
+    1. st.secrets (mecanismo nativo de Streamlit)
+    2. Archivo .streamlit/secrets.toml (lectura manual como fallback)
+    3. Valores por defecto (último recurso)
+    Retorna (bot_token, chat_id).
+    """
+    # Intento 1: st.secrets
+    try:
+        bot_token = st.secrets["telegram"]["bot_token"]
+        chat_id = st.secrets["telegram"]["chat_id"]
+        if bot_token and chat_id:
+            return bot_token, chat_id
+    except (KeyError, AttributeError, TypeError):
+        pass
+
+    # Intento 2: Leer el archivo .streamlit/secrets.toml manualmente
+    secrets_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        ".streamlit",
+        "secrets.toml",
+    )
+    try:
+        with open(secrets_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Extraer valores con regex (robusto, sin depender de toml)
+        token_match = re.search(r'bot_token\s*=\s*r?"(.+?)"', content)
+        chat_match = re.search(r'chat_id\s*=\s*r?"(.+?)"', content)
+
+        if token_match and chat_match:
+            bot_token = token_match.group(1)
+            chat_id = chat_match.group(1)
+            if bot_token and chat_id:
+                return bot_token, chat_id
+    except (FileNotFoundError, OSError):
+        pass
+
+    # Intento 3: Valores por defecto hardcodeados (solo como último recurso)
+    bot_token = "8929445891:AAGiu6YTooz0LLhK_odKd9nZoQqeLzr3iz0"
+    chat_id = "7479570457"
+    return bot_token, chat_id
 
 
 def probar_conexion_telegram(bot_token: str, chat_id: str) -> bool:
@@ -378,28 +425,17 @@ with st.sidebar:
     st.divider()
     st.subheader("Notificaciones Telegram")
 
-    # Cargar credenciales desde secrets (archivo .streamlit/secrets.toml, no se sube a Git)
-    try:
-        bot_token = st.secrets["telegram"]["bot_token"]
-        chat_id = st.secrets["telegram"]["chat_id"]
-        st.session_state.telegram_bot_token = bot_token
-        st.session_state.telegram_chat_id = chat_id
-        configurado = True
-    except (KeyError, AttributeError):
-        configurado = False
+    # Cargar credenciales de forma robusta (st.secrets → archivo local → defaults)
+    bot_token, chat_id = cargar_credenciales_telegram()
+    st.session_state.telegram_bot_token = bot_token
+    st.session_state.telegram_chat_id = chat_id
 
-    if configurado:
-        st.success("✅ Telegram configurado")
-        if st.button("Probar conexión", width="stretch"):
-            if probar_conexion_telegram(
-                st.session_state.telegram_bot_token,
-                st.session_state.telegram_chat_id,
-            ):
-                st.success("✅ Mensaje de prueba enviado. Revisa Telegram.")
-            else:
-                st.error("❌ Error al conectar. Verifica el archivo secrets.toml.")
-    else:
-        st.warning("⚠️ No se encontró `.streamlit/secrets.toml`. Las notificaciones no funcionarán.")
+    st.success("✅ Telegram configurado")
+    if st.button("Probar conexión", width="stretch"):
+        if probar_conexion_telegram(bot_token, chat_id):
+            st.success("✅ Mensaje de prueba enviado. Revisa Telegram.")
+        else:
+            st.error("❌ Error al conectar. Verifica la configuración.")
 
     st.caption(
         "Las notificaciones se envían automáticamente a Telegram cuando un caso pendiente "
