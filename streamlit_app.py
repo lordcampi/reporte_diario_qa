@@ -378,42 +378,32 @@ with st.sidebar:
     st.divider()
     st.subheader("Notificaciones Telegram")
 
-    # Leer credenciales desde secrets (no expuestas en el código)
-    secrets_token = ""
-    secrets_chat = ""
-    if hasattr(st, "secrets") and "telegram" in st.secrets:
-        secrets_token = st.secrets["telegram"].get("bot_token", "")
-        secrets_chat = st.secrets["telegram"].get("chat_id", "")
+    # Cargar credenciales desde secrets (archivo .streamlit/secrets.toml, no se sube a Git)
+    try:
+        bot_token = st.secrets["telegram"]["bot_token"]
+        chat_id = st.secrets["telegram"]["chat_id"]
+        st.session_state.telegram_bot_token = bot_token
+        st.session_state.telegram_chat_id = chat_id
+        configurado = True
+    except (KeyError, AttributeError):
+        configurado = False
 
-    default_token = st.session_state.get("telegram_bot_token") or secrets_token
-    default_chat = st.session_state.get("telegram_chat_id") or secrets_chat
-
-    telegram_bot_token = st.text_input(
-        "Bot Token",
-        value=default_token,
-        type="password",
-        help="Token del bot de Telegram obtenido de @BotFather. Configúralo en .streamlit/secrets.toml",
-    )
-    telegram_chat_id = st.text_input(
-        "Chat ID",
-        value=default_chat,
-        help="ID del chat donde recibirás las notificaciones.",
-    )
-
-    st.session_state.telegram_bot_token = telegram_bot_token
-    st.session_state.telegram_chat_id = telegram_chat_id
-
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
+    if configurado:
+        st.success("✅ Telegram configurado")
         if st.button("Probar conexión", width="stretch"):
-            if probar_conexion_telegram(telegram_bot_token, telegram_chat_id):
+            if probar_conexion_telegram(
+                st.session_state.telegram_bot_token,
+                st.session_state.telegram_chat_id,
+            ):
                 st.success("✅ Mensaje de prueba enviado. Revisa Telegram.")
             else:
-                st.error("❌ Error al conectar. Verifica el token y el chat ID.")
+                st.error("❌ Error al conectar. Verifica el archivo secrets.toml.")
+    else:
+        st.warning("⚠️ No se encontró `.streamlit/secrets.toml`. Las notificaciones no funcionarán.")
 
     st.caption(
-        "Configura tu bot de Telegram en `.streamlit/secrets.toml` y deja esta pestaña abierta "
-        "(puede estar minimizada). Cuando llegue la hora programada, recibirás un mensaje en Telegram."
+        "Las notificaciones se envían automáticamente a Telegram cuando un caso pendiente "
+        "alcanza su hora de revisión. Deja esta pestaña abierta (puede estar minimizada)."
     )
 
     st.divider()
