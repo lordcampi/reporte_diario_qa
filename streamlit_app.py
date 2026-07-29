@@ -378,18 +378,21 @@ with st.sidebar:
     st.divider()
     st.subheader("Notificaciones Telegram")
 
-    default_token = st.session_state.get("telegram_bot_token", "8929445891:AAGiu6YTooz0LLhK_odKd9nZoQqeLzr3iz0")
-    default_chat = st.session_state.get("telegram_chat_id", "7479570457")
+    # Leer credenciales desde secrets (no expuestas en el código)
+    secrets_token = ""
+    secrets_chat = ""
+    if hasattr(st, "secrets") and "telegram" in st.secrets:
+        secrets_token = st.secrets["telegram"].get("bot_token", "")
+        secrets_chat = st.secrets["telegram"].get("chat_id", "")
 
-    if st.session_state.get("_tg_token_reset"):
-        default_token = "8929445891:AAGiu6YTooz0LLhK_odKd9nZoQqeLzr3iz0"
-        default_chat = "7479570457"
+    default_token = st.session_state.get("telegram_bot_token") or secrets_token
+    default_chat = st.session_state.get("telegram_chat_id") or secrets_chat
 
     telegram_bot_token = st.text_input(
         "Bot Token",
         value=default_token,
         type="password",
-        help="Token del bot de Telegram obtenido de @BotFather.",
+        help="Token del bot de Telegram obtenido de @BotFather. Configúralo en .streamlit/secrets.toml",
     )
     telegram_chat_id = st.text_input(
         "Chat ID",
@@ -407,17 +410,10 @@ with st.sidebar:
                 st.success("✅ Mensaje de prueba enviado. Revisa Telegram.")
             else:
                 st.error("❌ Error al conectar. Verifica el token y el chat ID.")
-    with col_t2:
-        if st.button("Restaurar defaults", width="stretch"):
-            st.session_state._tg_token_reset = True
-            st.rerun()
-
-    if st.session_state.get("_tg_token_reset"):
-        st.session_state._tg_token_reset = False
 
     st.caption(
-        "Configura tu bot de Telegram y deja esta pestaña abierta (puede estar minimizada). "
-        "Cuando llegue la hora programada, recibirás un mensaje en Telegram."
+        "Configura tu bot de Telegram en `.streamlit/secrets.toml` y deja esta pestaña abierta "
+        "(puede estar minimizada). Cuando llegue la hora programada, recibirás un mensaje en Telegram."
     )
 
     st.divider()
