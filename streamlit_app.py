@@ -1,13 +1,12 @@
 """
 Dashboard de Análisis de SLA - Reporte Diario
 """
-import json
 from datetime import timedelta
 from io import BytesIO
 
 import pandas as pd
+import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from utils import (
     DEFAULT_SLA_CONFIG,
     ahora_local,
@@ -187,112 +186,71 @@ def render_banner_alertas(alertas: list) -> None:
     )
 
 
-def render_activador_notificaciones() -> None:
-    """Botón HTML para solicitar permiso de notificaciones (requiere clic del usuario)."""
-    components.html(
-        """
-        <div>
-            <button class="notif-btn" id="btn-notif">
-                Activar notificaciones de escritorio
-            </button>
-            <span class="notif-status" id="notif-status"></span>
-        </div>
-        <script>
-        const status = document.getElementById("notif-status");
-
-        function actualizarEstado() {
-            if (!("Notification" in window)) {
-                status.textContent = "Tu navegador no soporta notificaciones.";
-                status.className = "notif-status notif-warn";
-                return;
-            }
-            if (Notification.permission === "granted") {
-                status.textContent = "✓ Notificaciones activadas";
-                status.className = "notif-status notif-ok";
-                document.getElementById("btn-notif").textContent = "Notificaciones activadas";
-            } else if (Notification.permission === "denied") {
-                status.textContent = "Bloqueadas. Habilítalas en la configuración del navegador.";
-                status.className = "notif-status notif-warn";
-            } else {
-                status.textContent = "Pendiente — haz clic para activar";
-                status.className = "notif-status";
-            }
-        }
-
-        document.getElementById("btn-notif").addEventListener("click", function () {
-            if (!("Notification" in window)) return;
-            Notification.requestPermission().then(function () {
-                actualizarEstado();
-            });
-        });
-
-        actualizarEstado();
-        </script>
-        """,
-        height=90,
-    )
+def probar_conexion_telegram(bot_token: str, chat_id: str) -> bool:
+    """Envía un mensaje de prueba a Telegram para verificar la configuración."""
+    if not bot_token or not chat_id:
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        respuesta = requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": "✅ Conexión exitosa — Notificaciones de SLA activadas desde el Dashboard.",
+            },
+            timeout=10,
+        )
+        return respuesta.status_code == 200 and respuesta.json().get("ok", False)
+    except Exception:
+        return False
 
 
-def enviar_notificaciones_escritorio(alertas: list) -> None:
-    """Envía una notificación de escritorio por cada caso nuevo."""
-    payload = json.dumps([
-        {
-            "id": str(a["Número del caso"]),
-            "agente": str(a["Agente"]),
-            "asunto": str(a["Asunto"]),
-            "sla": (
-                f"{a['SLA']:.1f}"
-                if isinstance(a["SLA"], (int, float))
-                else str(a["SLA"])
-            ),
-            "hora": str(a["Hora"]),
-        }
-        for a in alertas
-    ])
+def enviar_notificaciones_telegram(
+    bot_token: str,
+    chat_id: str,
+    alertas: list,
+) -> None:
+    """Envía un mensaje a Telegram por cada caso de alerta nuevo."""
+    if not bot_token or not chat_id:
+        return
 
-    components.html(
-        f"""
-        <script>
-        (function () {{
-            const alertas = {payload};
-            if (!("Notification" in window) || Notification.permission !== "granted") {{
-                return;
-            }}
+    for alerta in alertas:
+        caso_id = str(alerta["Número del caso"])
+        agente = str(alerta["Agente"])
+        asunto = str(alerta["Asunto"])
+        sla_val = alerta["SLA"]
+        sla_str = f"{sla_val:.1f}" if isinstance(sla_val, (int, float)) else str(sla_val)
+        hora = str(alerta["Hora"])
 
-            alertas.forEach(function (a) {{
-                const notif = new Notification("Revisar caso " + a.id, {{
-                    body: a.agente + " · " + a.asunto + " · SLA " + a.sla + " días · desde las " + a.hora,
-                    icon: "https://static.streamlit.io/favicon.ico",
-                    requireInteraction: true,
-                    tag: "sla-revision-" + a.id,
-                    silent: false,
-                }});
-                notif.onclick = function () {{
-                    window.focus();
-                    notif.close();
-                }};
-            }});
+        texto = (
+            f"⚠️ <b>Revisar caso {caso_id}</b>\n"
+            f"👤 Agente: {agente}\n"
+            f"📋 Asunto: {asunto}\n"
+            f"⏱️ SLA: {sla_str} días\n"
+            f"🕐 Revisar desde las: {hora}"
+        )
 
-            try {{
-                const ctx = new AudioContext();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.frequency.value = 880;
-                gain.gain.value = 0.15;
-                osc.start();
-                osc.stop(ctx.currentTime + 0.25);
-            }} catch (e) {{}}
-        }})();
-        </script>
-        """,
-        height=0,
-    )
+        try:
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            requests.post(
+                url,
+                json={
+                    "chat_id": chat_id,
+                    "text": texto,
+                    "parse_mode": "HTML",
+                },
+                timeout=10,
+            )
+        except Exception:
+            pass
 
 
-def notificar_alertas_nuevas(alertas: list) -> None:
-    """Muestra toast y notificación del navegador para alertas nuevas."""
+def notificar_alertas_nuevas(
+    alertas: list,
+    bot_token: str = "",
+    chat_id: str = "",
+) -> None:
+    """Muestra toast en Streamlit y envía notificación a Telegram para alertas nuevas."""
     ids_actuales = {a["Número del caso"] for a in alertas}
     nuevas = [a for a in alertas if a["Número del caso"] not in st.session_state.alertas_vistas]
 
@@ -303,14 +261,14 @@ def notificar_alertas_nuevas(alertas: list) -> None:
         )
 
     if nuevas:
-        enviar_notificaciones_escritorio(nuevas)
+        enviar_notificaciones_telegram(bot_token, chat_id, nuevas)
 
     st.session_state.alertas_vistas = ids_actuales
 
 
 @st.fragment(run_every=timedelta(seconds=15))
 def monitoreo_alertas() -> None:
-    """Verifica alertas automáticamente cada 15 segundos."""
+    """Verifica alertas automáticamente cada 15 segundos y envía notificaciones a Telegram."""
     categorias = st.session_state.get("categorias_cache")
     casos_info = st.session_state.get("casos_info_cache")
     if not categorias or not casos_info:
@@ -320,9 +278,12 @@ def monitoreo_alertas() -> None:
     sincronizar_todos_editores(categorias, revisiones)
     alertas = obtener_alertas_revision(revisiones, casos_info)
 
+    bot_token = st.session_state.get("telegram_bot_token", "")
+    chat_id = st.session_state.get("telegram_chat_id", "")
+
     if alertas:
         render_banner_alertas(alertas)
-        notificar_alertas_nuevas(alertas)
+        notificar_alertas_nuevas(alertas, bot_token, chat_id)
     elif necesita_monitoreo(revisiones):
         hora_actual = ahora_local().strftime("%I:%M %p")
         st.caption(
@@ -415,11 +376,48 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.subheader("Notificaciones")
-    render_activador_notificaciones()
+    st.subheader("Notificaciones Telegram")
+
+    default_token = st.session_state.get("telegram_bot_token", "8929445891:AAGiu6YTooz0LLhK_odKd9nZoQqeLzr3iz0")
+    default_chat = st.session_state.get("telegram_chat_id", "7479570457")
+
+    if st.session_state.get("_tg_token_reset"):
+        default_token = "8929445891:AAGiu6YTooz0LLhK_odKd9nZoQqeLzr3iz0"
+        default_chat = "7479570457"
+
+    telegram_bot_token = st.text_input(
+        "Bot Token",
+        value=default_token,
+        type="password",
+        help="Token del bot de Telegram obtenido de @BotFather.",
+    )
+    telegram_chat_id = st.text_input(
+        "Chat ID",
+        value=default_chat,
+        help="ID del chat donde recibirás las notificaciones.",
+    )
+
+    st.session_state.telegram_bot_token = telegram_bot_token
+    st.session_state.telegram_chat_id = telegram_chat_id
+
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        if st.button("Probar conexión", width="stretch"):
+            if probar_conexion_telegram(telegram_bot_token, telegram_chat_id):
+                st.success("✅ Mensaje de prueba enviado. Revisa Telegram.")
+            else:
+                st.error("❌ Error al conectar. Verifica el token y el chat ID.")
+    with col_t2:
+        if st.button("Restaurar defaults", width="stretch"):
+            st.session_state._tg_token_reset = True
+            st.rerun()
+
+    if st.session_state.get("_tg_token_reset"):
+        st.session_state._tg_token_reset = False
+
     st.caption(
-        "Activa las notificaciones y deja esta pestaña abierta (puede estar minimizada). "
-        "Cuando llegue la hora programada, recibirás un aviso en el escritorio."
+        "Configura tu bot de Telegram y deja esta pestaña abierta (puede estar minimizada). "
+        "Cuando llegue la hora programada, recibirás un mensaje en Telegram."
     )
 
     st.divider()
@@ -450,8 +448,8 @@ if archivo is not None:
                 hora_actual = ahora_local().strftime("%I:%M %p")
                 st.info(
                     f"Monitoreo activo. Hora actual: {hora_actual} (Colombia). "
-                    "Activa las notificaciones en el panel lateral y minimiza la ventana. "
-                    "La alerta llegará al escritorio cuando sea la hora programada."
+                    "Configura las notificaciones de Telegram en el panel lateral y minimiza la ventana. "
+                    "Recibirás un mensaje en Telegram cuando sea la hora programada."
                 )
 
         # --- Métricas generales ---
