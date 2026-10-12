@@ -133,6 +133,10 @@ def obtener_todas_categorias(
             df,
             asuntos=["CDRS3F", "CDD3F"],
         ),
+        "Escalado a Peya (CDRS3H, CDD3H)": filtrar_categoria(
+            df,
+            asuntos=["CDRS3H", "CDD3H"],
+        ),
     }
     return categorias
 
